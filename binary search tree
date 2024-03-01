@@ -1,0 +1,244 @@
+// Implementation of the Counter ADT. The Counter ADT keeps
+// track of the frequencies of unique tokens in the style of 
+// a binary search tree. Tokens that return a negative value 
+// when strcmp()-ed with the parent token become the left child
+// of the parent, while a positive value becomes the right child.
+//
+// By Anna Zhang
+//
+// Written: 21/10/23
+
+#include <assert.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "Counter.h"
+
+struct counterNode {
+	char *token;
+    int frequency;
+    struct counterNode *left;
+	struct counterNode *right;
+};
+
+struct counter {
+	struct counterNode *root;
+}; 
+
+typedef struct counterNode *counterNode;
+
+// function prototypes
+static void CounterFreeHelper(counterNode node);
+static void CounterAddHelper(counterNode node, char *token);
+static int CounterNumItemsHelper(counterNode c);
+static int CounterGetHelper(counterNode c, char *token);
+static void CounterItemsHelper(counterNode c, 
+							   struct item *tokenCopy, int *index);
+
+
+// Returns a new empty counter with no tokens
+Counter CounterNew(void) {
+	Counter counter = malloc(sizeof(struct counter));
+	if (counter == NULL) {
+		fprintf(stderr, "Memory allocation failed\n");
+		exit(EXIT_FAILURE);
+	}
+	
+	counter->root = malloc(sizeof(struct counterNode));
+    if (counter->root == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+		free(counter);
+        exit(EXIT_FAILURE);
+    }
+	counter->root->token = NULL;
+    counter->root->frequency = 0; 
+    counter->root->left = NULL;
+    counter->root->right = NULL;
+	return counter;
+}
+
+// Frees all memory allocated to the given counter
+void CounterFree(Counter c) {
+	if (c == NULL || c->root == NULL) {
+		return;
+	}
+	
+	CounterFreeHelper(c->root);
+	free(c);
+}
+
+// Helper function for CounterFree
+// Frees all tokens then the nodes in the Counter binary search tree.
+static void CounterFreeHelper(counterNode node) {
+	if (node == NULL) {
+		return;
+	}
+
+	CounterFreeHelper(node->left);
+	CounterFreeHelper(node->right);
+	free(node->token);
+	free(node);
+}
+
+// Adds an occurrence of the given token to the counter
+void CounterAdd(Counter c, char *token) {
+	// still an empty tree, intialise the root node
+	if (c->root->token == NULL) {
+		c->root->token = strdup(token);
+		c->root->frequency = 1;
+		return;
+	}
+
+	// Search for the token in the tree
+	counterNode node = c->root;
+
+	int tokenCompare = strcmp(token, node->token);
+	if (tokenCompare == 0) {
+		node->frequency++;
+		return;
+	}
+	
+	CounterAddHelper(node, token);
+}
+
+// Searches the given counterNode tree for a node with a matching token.
+// If the token is found, the frequency is incremented 
+// and the function returns.
+// If the token is not found, a new node is allocated and 
+// assigned as a left or right child
+// to the preceeding node depending on its token.
+static void CounterAddHelper(counterNode node, char *token) {
+	int tokenCompare = 0;
+	while (node != NULL) {
+		tokenCompare = strcmp(token, node->token);
+
+		if (tokenCompare < 0) {
+			if (node->left == NULL) {
+				break;
+			}
+			node = node->left;
+		} else if (tokenCompare > 0) {
+			if (node->right == NULL) {
+				break;
+			}
+			node = node->right;
+		} else {
+			// token already exists
+			node->frequency++;
+			return;
+		}
+	}
+
+	//token not found, create a new node
+	counterNode newNode = malloc(sizeof(struct counterNode));
+	if (newNode == NULL) {
+		fprintf(stderr, "Memory allocation failed\n");
+		exit(EXIT_FAILURE);
+	}
+
+	newNode->token = strdup(token);
+	newNode->frequency = 1;
+	newNode->left = newNode->right = NULL;
+
+	if (tokenCompare < 0) {
+		node->left = newNode;
+	} else {
+		node->right = newNode;
+	}
+
+	return;
+}
+
+// Returns the number of distinct tokens added to the counter
+int CounterNumItems(Counter c) {
+	if (c == NULL || c->root == NULL) {
+		return 0;
+	}
+
+	return CounterNumItemsHelper(c->root);
+}
+
+// Helper function for CounterNumItems. 
+// Recursively traverses through the given counterNode tree, with every recursion adding 1
+// to the final return value. Once all nodes have been traversed, the final return value will
+// be the number of nodes in the tree.
+static int CounterNumItemsHelper(counterNode c) {
+	if (c == NULL) {
+		return 0;
+	}
+	
+	return 1 + CounterNumItemsHelper(c->left) + CounterNumItemsHelper(c->right);
+}
+
+// Returns the frequency of the given token in the Counter binary search tree.
+int CounterGet(Counter c, char *token) {
+	if (c == NULL || c->root == NULL) {
+		return 0; 
+	}
+
+	return CounterGetHelper(c->root, token);
+}
+
+// Helper for CounterGet. 
+// Recursively traverses through the given counterNode tree, using 
+// strcmp to navigate left or right through the nodes. 
+// once strcmp returns 0, the token is found and the frequency is returned.
+// Otherwise, the token is not found and 0 is returned.
+static int CounterGetHelper(counterNode c, char *token) {
+	if (c == NULL) {
+		return 0;
+	}
+	int tokenCompare = strcmp(token, c->token);
+
+	if (tokenCompare < 0) {
+		return CounterGetHelper(c->left, token);
+	} else if (tokenCompare > 0) {
+		return CounterGetHelper(c->right, token);
+	} else {
+		return c->frequency;
+	}
+}
+
+// Returns a dynamically allocated array containing a copy 
+// of each distinct token in the counter and its count (in any order), 
+// and sets *numItems to the number of distinct tokens.
+struct item *CounterItems(Counter c, int *numItems) {
+	*numItems = CounterNumItems(c);
+	if (*numItems == 0) {
+		return NULL;
+	}
+
+	struct item *tokenCopy = malloc(*numItems * sizeof(struct item));
+	if (tokenCopy == NULL) {
+		fprintf(stderr, "Memory allocation failed\n");
+		exit(EXIT_FAILURE);
+	}
+	
+	int index = 0;
+	CounterItemsHelper(c->root, tokenCopy, &index);
+
+	return tokenCopy;
+}
+
+// Helper for CounterItems
+// Recursively traverses the given counterNode tree and initialises the tokenCopy array
+// at the specified index with its frequency and token. 
+static void CounterItemsHelper(counterNode c, struct item *tokenCopy, int *index) {
+	if (c == NULL) {
+		return;
+	}
+	
+	tokenCopy[*index].token = strdup(c->token);
+	tokenCopy[*index].freq = c->frequency;
+	(*index)++;
+
+	CounterItemsHelper(c->left, tokenCopy, index);
+	CounterItemsHelper(c->right, tokenCopy, index);
+}
+
+
+
+
+
