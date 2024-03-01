@@ -1,0 +1,235 @@
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "navigator.h"
+#include "RoadMap.h"
+#include "time.h"
+
+static void freeMemory(int *travelTime, int *predecessor, bool *visited,
+					   int *successor, int *legTime, int *routeTrafficLights);
+static void dijkstraSSSP(RoadMap map, int *travelTime, int numNodes, 
+						 bool *visited, int *predecessor, 
+						 int *routeTrafficLights, int fromNode, int toNode);
+static int findMinTimeNode(int *distance, bool *visited, int numNodes);
+static void exploreNode(RoadMap map,
+						int *travelTime, int *predecessor, 
+						bool *visited, int *routeTrafficLights,
+						struct road roads[], int roadsFromNode, int endNode);
+static int initialiseSuccessorArray(int toNode, int fromNode, int *predecessor, 
+									 int *successor, int *legTime,
+									 int *travelTime);
+static void initialiseRoute(RoadMap map, struct route *route, struct time time, 
+						    int fromNode, int toNode, 
+							int *successor, int *legTime);
+static struct time initialiseLegData(RoadMap map, int *successor, 
+									   struct route route, int *legTime, 
+									   int currentNode, int nextNode,
+							   		   struct time time, int index, 
+									   int toNode);
+////////////////////////////////////////////////////////////////////////
+// Find and return the fastest route from fromNode to toNode.
+struct route navigate(RoadMap map, int fromNode, int toNode,
+                      struct time time) {
+	struct route route = {
+		.fromNode = fromNode,
+		.toNode = toNode,
+		.numLegs = 0,
+		.legs = NULL,
+	};
+
+	if (!RoadMapOnSameIsland(map, fromNode, toNode)) {
+		return route;
+	}
+
+	int numNodes = RoadMapNumNodes(map);
+	int *travelTime = malloc(numNodes * sizeof(int));
+	int *predecessor = malloc(numNodes * sizeof(int));
+	bool *visited = calloc(numNodes, sizeof(bool));
+	int *successor = malloc(numNodes * sizeof(int));
+	int *legTime = calloc(numNodes, sizeof(int));
+	int *routeTrafficLights = calloc(numNodes, sizeof(int));	
+
+	for (int i = 0; i < numNodes; i++) {
+		travelTime[i] = INT_MAX;
+		predecessor[i] = -1;
+		successor[i] = -1;
+	}
+
+	dijkstraSSSP(map, travelTime, numNodes, visited, 
+				 predecessor, routeTrafficLights, fromNode, toNode);
+	// if toNode has not been visited, then there is not a path
+	if (!visited[toNode]) {
+		freeMemory(travelTime, predecessor, visited, 
+				   successor, legTime, routeTrafficLights);
+		return route;
+	}
+
+	route.numLegs = initialiseSuccessorArray(toNode, fromNode, predecessor, 
+											 successor, legTime, travelTime);
+	initialiseRoute(map, &route, time, fromNode, toNode, successor, legTime);
+	
+	freeMemory(travelTime, predecessor, visited, 
+			   successor, legTime, routeTrafficLights);
+	return route;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+// Frees the memory allocated for navigating purposes
+static void freeMemory(int *travelTime, int *predecessor, bool *visited,
+					   int *successor, int *legTime, int *routeTrafficLights) {
+	free(travelTime);
+	free(predecessor);
+	free(visited);
+	free(successor);
+	free(legTime);
+	free(routeTrafficLights);
+}
+
+// Procedure utilises Dijkstra's Single Source Shortest Path algorithm to find 
+// the shortest travel time from a given starting node to all other nodes.
+static void dijkstraSSSP(RoadMap map, int *travelTime, int numNodes, 
+						 bool *visited, int *predecessor, 
+						 int *routeTrafficLights, int fromNode, int toNode) {
+	travelTime[fromNode] = 0;
+	for (int i = 0; i < numNodes; i++) {
+		int minTravelTimeNode = findMinTimeNode(travelTime, visited, numNodes);
+		struct road roads[MAX_ROADS_PER_NODE];
+		int roadsFromNode = RoadMapGetRoadsFrom(map, minTravelTimeNode, roads);
+		exploreNode(map, travelTime, predecessor, visited, 
+					routeTrafficLights, roads, roadsFromNode, toNode);
+		visited[minTravelTimeNode] = true;
+	}
+}
+
+// Function finds and returns the first node with the minimum travel time 
+// from the source that has not been visited yet.
+static int findMinTimeNode(int *travelTime, bool *visited, int numNodes) {
+	int minTravelTime;
+	int minTravelIndex;
+
+	// find the first unvisited node as a reference
+	for (int i = 0; i < numNodes; i++) {
+		if (visited[i] == false) {
+			minTravelTime = travelTime[i];
+			minTravelIndex = i;
+			break;
+		}
+	}
+	// start from i = 1 as travelTime[0]
+	// is the reference or definitely already visited
+	for (int i = 1; i < numNodes; i++) {
+		if (!visited[i] && (travelTime[i] < minTravelTime)) {
+			minTravelTime = travelTime[i];
+			minTravelIndex = i;
+		}
+	}
+	return minTravelIndex;
+}
+
+// Procedure explores the neighbours of the given node. If the travel time to
+// a neighbouring node is shorter than the current time to that node, then
+// the travelTime array is updated with the new time. Takes into account
+// wait time at traffic lights.
+static void exploreNode(RoadMap map, int *travelTime, int *predecessor, 
+						bool *visited, int *routeTrafficLights,
+						struct road roads[], int roadsFromNode, int endNode) {
+	for (int i = 0; i < roadsFromNode; i++) {
+		int fromNode = roads[i].fromNode;
+		int toNode = roads[i].toNode;
+		if (visited[toNode]) {
+			continue;
+		}
+
+		int timeOnRoad = roads[i].travelMinutes;
+
+		// keep track of the number of traffic lights along the current
+		// shortest path
+		int possibleRouteLightWait = 0;
+		if (RoadMapHasTrafficLights(map, toNode) && toNode != endNode) {
+			possibleRouteLightWait = (routeTrafficLights[fromNode] + 1) 
+								  	 * TRAFFIC_LIGHT_WAIT;
+		}
+
+		// if the road being explored has a shorter travel time from source than
+		// currently stored in the travelTime array 
+		if (travelTime[fromNode] + timeOnRoad + possibleRouteLightWait 
+			< travelTime[toNode] + routeTrafficLights[toNode]) {
+			travelTime[toNode] = travelTime[fromNode] + timeOnRoad;
+			predecessor[toNode] = fromNode; 
+			routeTrafficLights[toNode] = possibleRouteLightWait;
+		}
+	}
+}
+
+// Function uses the predecessor array to create a successor array of nodes 
+// that give the shortest time from fromNode to toNode.
+
+static int initialiseSuccessorArray(int toNode, int fromNode, int *predecessor, 
+									int *successor, int *legTime,
+									int *travelTime) {
+	int currentNode = toNode;
+	int numLegs = 0;
+	// trace the predecessor array backwards to obtain the forward route from
+	// fromNode to toNode
+	while (currentNode != fromNode) {
+		int pred = predecessor[currentNode];
+		int roadTime = travelTime[currentNode] - travelTime[pred];
+		successor[pred] = currentNode;
+		// The time of each leg is stored in the legTime array
+		// at the index of the start node of the road, which is predecessor
+		// when tracing backwards.
+		legTime[pred] = roadTime;
+		numLegs++;
+		currentNode = pred;
+	}
+	return numLegs;
+}
+
+// Procedure to initialise the struct route route that is returned by the
+// navigate function. 
+static void initialiseRoute(RoadMap map, struct route *route, struct time time, 
+						    int fromNode, int toNode, 
+							int *successor, int *legTime) {
+	route->totalDuration = 0;
+	route->legs = malloc(route->numLegs * sizeof(struct leg));
+	route->start = time;
+	int currentNode = fromNode;
+	struct time currTime = time;
+	for (int i = 0; i < route->numLegs; i++) {
+		int nextNode = successor[currentNode];
+		currTime = initialiseLegData(map, successor, *route, legTime, 
+									   currentNode, nextNode, currTime, 
+									   i, toNode);
+		currentNode = nextNode;
+	}
+	route->totalDuration = timeDiff(time, currTime);
+	route->end = timeAdd(route->start, route->totalDuration);
+}
+
+// Function that initialises the struct leg legs array, returning the time after
+// travelling a leg, including possible traffic light wait time. 
+static struct time initialiseLegData(RoadMap map, int *successor, 
+									   struct route route, int *legTime, 
+									   int currentNode, int nextNode,
+							   		   struct time time, int index,
+									   int toNode) {
+	route.legs[index].fromNode = currentNode;
+	route.legs[index].toNode = nextNode;
+
+	route.legs[index].start = time;
+	struct time timeAfterLeg = timeAdd(time, legTime[currentNode]);
+	route.legs[index].end = timeAfterLeg;
+
+	route.legs[index].duration = legTime[currentNode];
+
+	if (RoadMapHasTrafficLights(map, nextNode) && nextNode != toNode) {
+		time = timeAdd(timeAfterLeg, TRAFFIC_LIGHT_WAIT);
+	} else {
+		time = timeAfterLeg;
+	}
+	return time;
+}
